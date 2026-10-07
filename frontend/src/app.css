@@ -1,0 +1,82 @@
+/* 篆刻印章与钤印记录台 · 全局样式（Tailwind + 少量基础层） */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+    margin: 0;
+  }
+
+  body {
+    background-color: #f4efe3;
+    color: #23282a;
+    font-family: 'Songti SC', 'Noto Serif SC', 'Source Han Serif SC', 'PingFang SC', 'Microsoft YaHei', serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* 宣纸底纹 */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.5;
+    background-image:
+      radial-gradient(circle at 12% 14%, rgba(185, 138, 60, 0.1), transparent 42%),
+      radial-gradient(circle at 88% 8%, rgba(156, 43, 31, 0.08), transparent 40%),
+      repeating-linear-gradient(0deg, rgba(35, 40, 42, 0.02) 0 1px, transparent 1px 4px);
+  }
+
+  ::selection {
+    background: rgba(156, 43, 31, 0.18);
+  }
+}
+
+@layer components {
+  .gb-panel {
+    @apply rounded-xl border border-line bg-paper-light p-4 shadow-card;
+  }
+
+  .gb-btn {
+    @apply rounded-lg border border-line px-3 py-1.5 text-sm text-ink transition hover:bg-black/5;
+  }
+
+  .gb-btn-primary {
+    @apply rounded-lg bg-seal px-3 py-1.5 text-sm font-medium text-paper-light transition hover:bg-seal-soft;
+  }
+
+  .gb-btn-danger {
+    @apply rounded-lg border border-seal/40 px-3 py-1.5 text-sm text-seal transition hover:bg-seal/10;
+  }
+
+  .gb-input {
+    @apply w-full rounded-lg border border-line bg-white px-3 py-2 text-sm outline-none focus:border-seal;
+  }
+
+  .gb-label {
+    @apply mb-1 block text-xs text-ink-soft;
+  }
+
+  .gb-table {
+    @apply w-full border-collapse text-sm;
+  }
+
+  .gb-table th {
+    @apply border-b border-line bg-black/[0.03] px-3 py-2 text-left font-medium text-ink-soft;
+  }
+
+  .gb-table td {
+    @apply border-b border-line/70 px-3 py-2 align-middle;
+  }
+
+  .gb-tag {
+    @apply inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs;
+  }
+
+  .gb-seal-preview {
+    @apply grid place-items-center rounded-lg border-2 p-3 text-center tracking-[0.3em];
+  }
+}
