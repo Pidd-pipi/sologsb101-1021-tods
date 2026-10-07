@@ -372,3 +372,75 @@ export async function renumberCatalog(stoneId?: string): Promise<void> {
   );
   await db.catalogs.bulkPut(sorted.map((row, index) => ({ ...row, orderNo: index + 1, updatedAt: Date.now() })));
 }
+
+/* ------------------------------ 重复档案归并 ------------------------------ */
+
+export type { MergeInput, MergePlan } from './merge';
+export { planMerge, assertReferencesIntact } from './merge';
+import { planMerge, type MergePlan } from './merge';
+
+/**
+ * 归并两位作者分别导入旧备份造成的重复档案：
+ * - 印石名 + 石种 + 尺寸相同的并成一方；同石上印文 + 朱白文相同的印稿并成一稿；
+ * - 保留记录整条取最近改动的那份；两边的工序、钤印都留到保留稿上；
+ * - 印谱里指向同一印稿的多余条目并掉，全谱重编号。
+ *
+ * 全部读取、规划、写入放在同一个读写事务里：任一步失败，IndexedDB 自动整体回滚，
+ * 不会留下半份结果。返回归并统计（无重复时 changed=false，库内数据原样不动）。
+ */
+export async function mergeDuplicates(): Promise<MergePlan> {
+  return db.transaction(
+    'rw',
+    [db.stones, db.designs, db.carves, db.impressions, db.catalogs],
+    async () => {
+      const [stones, designs, carves, impressions, catalogs] = await Promise.all([
+        db.stones.toArray(),
+        db.designs.toArray(),
+        db.carves.toArray(),
+        db.impressions.toArray(),
+        db.catalogs.toArray(),
+      ]);
+
+      const plan = planMerge({ stones, designs, carves, impressions, catalogs });
+      if (!plan.changed) return plan;
+
+      // 写入前再次自检：所有外键必须落在归并后保留的记录上，否则抛错回滚
+      const stoneIds = new Set(plan.stones.map((row) => row.id));
+      const designIds = new Set(plan.designs.map((row) => row.id));
+      for (const design of plan.designs) {
+        if (!stoneIds.has(design.stoneId)) throw new Error('归并自检失败：印稿外键悬空，已回滚');
+      }
+      for (const carve of plan.carves) {
+        if (!designIds.has(carve.designId)) throw new Error('归并自检失败：工序外键悬空，已回滚');
+      }
+      for (const impression of plan.impressions) {
+        if (!designIds.has(impression.designId)) throw new Error('归并自检失败：钤印外键悬空，已回滚');
+      }
+      for (const catalog of plan.catalogs) {
+        if (!stoneIds.has(catalog.stoneId) || !designIds.has(catalog.designId)) {
+          throw new Error('归并自检失败：印谱外键悬空，已回滚');
+        }
+      }
+
+      const droppedStoneIds = Object.keys(plan.mergedStoneIds);
+      const droppedDesignIds = Object.keys(plan.mergedDesignIds);
+
+      await Promise.all([
+        db.stones.bulkPut(plan.stones),
+        db.designs.bulkPut(plan.designs),
+        db.carves.bulkPut(plan.carves),
+        db.impressions.bulkPut(plan.impressions),
+        db.catalogs.bulkPut(plan.catalogs),
+      ]);
+      await Promise.all([
+        droppedStoneIds.length > 0 ? db.stones.bulkDelete(droppedStoneIds) : Promise.resolve(),
+        droppedDesignIds.length > 0 ? db.designs.bulkDelete(droppedDesignIds) : Promise.resolve(),
+        plan.removedCatalogIds.length > 0
+          ? db.catalogs.bulkDelete(plan.removedCatalogIds)
+          : Promise.resolve(),
+      ]);
+
+      return plan;
+    },
+  );
+}

@@ -24,6 +24,7 @@
     DB_VERSION,
     exportSnapshot,
     importSnapshot,
+    mergeDuplicates,
     readLastBackupAt,
     resetDatabase,
     writeLastBackupAt,
@@ -190,6 +191,33 @@
     await Promise.all([loadStones(), loadDesigns(), loadCarves(), loadImpressions(), catalogTable.refresh()]);
     showToast('已清空并重新载入演示数据');
   }
+
+  async function handleMerge(): Promise<void> {
+    if (
+      !window.confirm(
+        '将按以下规则归并重复档案，操作不可撤销（中途出错会整体回滚）：\n\n' +
+          '· 印石名、石种、尺寸相同的并成一方；\n' +
+          '· 同一方石上印文与朱白文相同的印稿并成一稿，字段取最近改动的那份；\n' +
+          '· 两边的工序、钤印都保留到合并后的印稿上；\n' +
+          '· 印谱中指向同一印稿的多余条目并掉并重新编号。\n\n' +
+          '建议先导出一份 JSON 备份。是否继续？',
+      )
+    )
+      return;
+    try {
+      const summary = await mergeDuplicates();
+      await Promise.all([loadStones(), loadDesigns(), loadCarves(), loadImpressions(), catalogTable.refresh()]);
+      if (!summary.changed) {
+        showToast('未发现重复档案，无需归并');
+      } else {
+        showToast(
+          `归并完成：印石 ${summary.mergedStoneCount} 方、印稿 ${summary.mergedDesignCount} 稿、印谱条目 ${summary.mergedCatalogCount} 条`,
+        );
+      }
+    } catch (error) {
+      showToast(error instanceof Error ? `归并失败，已整体回滚：${error.message}` : '归并失败，已整体回滚');
+    }
+  }
 </script>
 
 <div class="space-y-4">
@@ -204,6 +232,7 @@
     <div class="flex flex-wrap gap-2">
       <button class="gb-btn" onclick={() => void handleExport()}>导出 JSON</button>
       <button class="gb-btn" onclick={() => fileInput?.click()}>导入 JSON</button>
+      <button class="gb-btn" onclick={() => void handleMerge()} title="把两位作者重复导入的印石、印稿与印谱条目并成一份">归并重复</button>
       <button class="gb-btn-danger" onclick={() => void handleReset()}>清空重播种</button>
       <button class="gb-btn-primary" onclick={openCreate}>加入印谱</button>
       <input
