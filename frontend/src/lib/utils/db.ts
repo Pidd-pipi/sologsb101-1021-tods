@@ -12,6 +12,7 @@ import type { Design } from '$lib/types/design';
 import type { Carve } from '$lib/types/carve';
 import type { Impression } from '$lib/types/impression';
 import type { Catalog } from '$lib/types/catalog';
+import { mergeDuplicateRows, type MergeResult, type MergeInput } from './merge';
 
 /** 数据库名（README 与导出文件均使用该名称） */
 export const DB_NAME = 'gbsealcarve';
@@ -321,6 +322,56 @@ export async function importSnapshot(snapshot: SealCarveSnapshot): Promise<void>
 export async function resetDatabase(): Promise<void> {
   await clearAllTables();
   await seedDatabase();
+}
+
+/**
+ * 合并两位作者各自导入旧备份造成的重复档案。
+ *
+ * 规则见 utils/merge.ts：同名同石种同尺寸的印石并一方；同石上印文与朱白文
+ * 都相同的印稿并一稿；保留最近改动那份的字段；两边的工序 / 钤印都迁到保留
+ * 印稿（工序重新连号）；印谱中同稿多余条目并掉并全谱重编号。
+ *
+ * 读取、计算与写回放在同一个可读写事务里：任一环节抛错，IndexedDB 自动回滚
+ * 全部改动，绝不留下半份结果。
+ */
+export async function mergeDuplicates(): Promise<MergeResult> {
+  return db.transaction(
+    'rw',
+    [db.stones, db.designs, db.carves, db.impressions, db.catalogs],
+    async () => {
+      const input: MergeInput = {
+        stones: await db.stones.toArray(),
+        designs: await db.designs.toArray(),
+        carves: await db.carves.toArray(),
+        impressions: await db.impressions.toArray(),
+        catalogs: await db.catalogs.toArray(),
+      };
+      const merged = mergeDuplicateRows(input, Date.now());
+      if (
+        merged.summary.mergedStones === 0 &&
+        merged.summary.mergedDesigns === 0 &&
+        merged.summary.mergedCatalogs === 0
+      ) {
+        return merged;
+      }
+      // 整表替换：先清空再写回；与 clearAllTables 同处一个事务，失败一并回滚
+      await Promise.all([
+        db.stones.clear(),
+        db.designs.clear(),
+        db.carves.clear(),
+        db.impressions.clear(),
+        db.catalogs.clear(),
+      ]);
+      await Promise.all([
+        db.stones.bulkPut(merged.stones),
+        db.designs.bulkPut(merged.designs),
+        db.carves.bulkPut(merged.carves),
+        db.impressions.bulkPut(merged.impressions),
+        db.catalogs.bulkPut(merged.catalogs),
+      ]);
+      return merged;
+    },
+  );
 }
 
 export async function countAll(): Promise<Record<string, number>> {

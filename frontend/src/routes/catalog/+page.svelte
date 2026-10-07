@@ -24,10 +24,14 @@
     DB_VERSION,
     exportSnapshot,
     importSnapshot,
+    mergeDuplicates,
     readLastBackupAt,
     resetDatabase,
     writeLastBackupAt,
   } from '$lib/utils/db';
+  import { previewDuplicates, type MergeSummary } from '$lib/utils/merge';
+  import { STONE_TYPE_LABEL } from '$lib/types/stone';
+  import { DESIGN_STYLE_LABEL } from '$lib/types/design';
   import {
     buildCatalogText,
     copyText,
@@ -50,6 +54,9 @@
   let newStoneId = $state('');
   let newDesignId = $state('');
   let newNote = $state('');
+  let mergeOpen = $state(false);
+  let mergeBusy = $state(false);
+  let mergeError = $state('');
 
   const ordered = $derived([...$catalogRows].sort((a, b) => a.orderNo - b.orderNo));
 
@@ -92,6 +99,17 @@
   function stoneText(stoneId: string): string {
     return $stones.find((stone) => stone.id === stoneId)?.name ?? '（印石已删除）';
   }
+
+  // 实时预览重复：印石按同名同石种同尺寸、印稿按同石同印文同朱白文
+  const duplicatePreview = $derived(
+    previewDuplicates({
+      stones: $stones,
+      designs: $designs,
+      carves: $carves,
+      impressions: $impressions,
+      catalogs: ordered,
+    }),
+  );
 
   function showToast(text: string): void {
     toast = text;
@@ -190,6 +208,41 @@
     await Promise.all([loadStones(), loadDesigns(), loadCarves(), loadImpressions(), catalogTable.refresh()]);
     showToast('已清空并重新载入演示数据');
   }
+
+  function openMerge(): void {
+    if (duplicatePreview.total === 0) {
+      showToast('没有发现可合并的重复档案');
+      return;
+    }
+    mergeError = '';
+    mergeOpen = true;
+  }
+
+  async function confirmMerge(): Promise<void> {
+    mergeBusy = true;
+    mergeError = '';
+    try {
+      const result = await mergeDuplicates();
+      await Promise.all([
+        loadStones(),
+        loadDesigns(),
+        loadCarves(),
+        loadImpressions(),
+        catalogTable.refresh(),
+      ]);
+      mergeOpen = false;
+      showToast(formatMergeSummary(result.summary));
+    } catch (err) {
+      // 事务已整体回滚，库内仍是合并前的数据；明确提示不留半份结果
+      mergeError = `合并失败，档案已整体回滚，未做任何改动：${err instanceof Error ? err.message : '未知错误'}`;
+    } finally {
+      mergeBusy = false;
+    }
+  }
+
+  function formatMergeSummary(summary: MergeSummary): string {
+    return `合并完成：印石 ${summary.mergedStones} 方、印稿 ${summary.mergedDesigns} 稿、印谱条目 ${summary.mergedCatalogs} 条；迁移工序 ${summary.movedCarves} 道、钤印 ${summary.movedImpressions} 次`;
+  }
 </script>
 
 <div class="space-y-4">
@@ -204,6 +257,7 @@
     <div class="flex flex-wrap gap-2">
       <button class="gb-btn" onclick={() => void handleExport()}>导出 JSON</button>
       <button class="gb-btn" onclick={() => fileInput?.click()}>导入 JSON</button>
+      <button class="gb-btn" onclick={openMerge}>合并重复档案</button>
       <button class="gb-btn-danger" onclick={() => void handleReset()}>清空重播种</button>
       <button class="gb-btn-primary" onclick={openCreate}>加入印谱</button>
       <input
@@ -218,6 +272,15 @@
 
   {#if toast}
     <div class="rounded-xl border border-jade/40 bg-jade/10 px-4 py-2 text-sm text-jade">{toast}</div>
+  {/if}
+
+  {#if duplicatePreview.total > 0}
+    <div class="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber/40 bg-amber/10 px-4 py-2 text-sm text-amber">
+      <span>
+        检测到重复档案：印石 {duplicatePreview.stoneGroups.length} 组、印稿 {duplicatePreview.designGroups.length} 组（多为各自导入旧备份所致）。
+      </span>
+      <button class="gb-btn px-2 py-1" onclick={openMerge}>查看并合并</button>
+    </div>
   {/if}
 
   <div class="flex flex-wrap gap-3">
@@ -405,6 +468,63 @@
       <div class="mt-5 flex justify-end gap-2">
         <button class="gb-btn" onclick={() => (pendingDelete = null)}>取消</button>
         <button class="gb-btn-primary" onclick={() => void confirmDelete()}>确认删除</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if mergeOpen}
+  <div class="fixed inset-0 z-50 grid place-items-center bg-black/40 px-4">
+    <div class="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-xl border border-line bg-paper-light p-5 shadow-xl">
+      <h3 class="text-lg text-ink">合并重复档案</h3>
+      <p class="mt-2 text-sm text-ink-soft">
+        两位作者各导入过旧备份，同一方印石、同一方印稿各存了两条。合并规则：
+      </p>
+      <ul class="mt-2 list-disc space-y-1 pl-6 text-sm text-ink-soft">
+        <li>印石名、石种、尺寸都相同的算一方；同石上印文与朱白文都相同的印稿算一稿；</li>
+        <li>合成一条时字段取最近改动的那份，被并掉的旧条目不保留；</li>
+        <li>两边记下的工序、钤印都迁到保留的印稿上，工序按顺序重新连号；</li>
+        <li>印谱里指着同一印稿的多余条目并成一条，全谱重新编号；</li>
+        <li>合并在单个事务内完成，中途失败会整体回滚，不会留下半份结果。</li>
+      </ul>
+
+      <div class="mt-4 space-y-4">
+        {#if duplicatePreview.stoneGroups.length > 0}
+          <section>
+            <h4 class="mb-1 text-sm font-medium text-ink">重复印石（{duplicatePreview.stoneGroups.length} 组）</h4>
+            <ul class="space-y-1 text-sm text-ink-soft">
+              {#each duplicatePreview.stoneGroups as group (group.key)}
+                <li>
+                  「{group.name}」· {STONE_TYPE_LABEL[group.stoneType]} · {group.sizeMm} — 各存 {group.count} 条，并为 1 方
+                </li>
+              {/each}
+            </ul>
+          </section>
+        {/if}
+        {#if duplicatePreview.designGroups.length > 0}
+          <section>
+            <h4 class="mb-1 text-sm font-medium text-ink">重复印稿（{duplicatePreview.designGroups.length} 组）</h4>
+            <ul class="space-y-1 text-sm text-ink-soft">
+              {#each duplicatePreview.designGroups as group (group.key)}
+                <li>
+                  「{group.sealText}」· {DESIGN_STYLE_LABEL[group.style]}
+                  （{stoneText(group.stoneId)}）— 各存 {group.count} 条，并为 1 稿
+                </li>
+              {/each}
+            </ul>
+          </section>
+        {/if}
+      </div>
+
+      {#if mergeError}
+        <div class="mt-4 rounded-xl border border-seal/40 bg-seal/10 px-4 py-2 text-sm text-seal">{mergeError}</div>
+      {/if}
+
+      <div class="mt-5 flex justify-end gap-2">
+        <button class="gb-btn" disabled={mergeBusy} onclick={() => (mergeOpen = false)}>取消</button>
+        <button class="gb-btn-primary" disabled={mergeBusy} onclick={() => void confirmMerge()}>
+          {mergeBusy ? '合并中…' : '确认合并'}
+        </button>
       </div>
     </div>
   </div>

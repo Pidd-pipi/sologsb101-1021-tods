@@ -71,7 +71,7 @@ npm run preview    # 本地预览构建产物（http://localhost:22821）
 | `/#/designs` | 印稿设计与释文 | 朱文白文、边框式样与章法备注录入，标记采用稿（同石采用稿唯一） | Design、Stone |
 | `/#/carve` | 刻制工序看板 | 按印稿列出刀法步骤、拖拽或上下移排序、批量完成；全部完成回写印石为「已刻」 | Carve、Design |
 | `/#/impressions` | 钤印登记与效果比对 | 同稿多枚并列展示印泥、纸张、压力与评级，按评级择优并一键回填采用稿效果 | Impression、Design |
-| `/#/catalog` | 印谱汇总与导出 | 排序重编号、收录状态切换、印谱清单生成、JSON 导入导出与清空重播种 | Catalog 及全部模型 |
+| `/#/catalog` | 印谱汇总与导出 | 排序重编号、收录状态切换、印谱清单生成、**重复档案合并**、JSON 导入导出与清空重播种 | Catalog 及全部模型 |
 
 未知路径由 `routes/NotFound.svelte` 给出友好空态（不白屏）。筛选条件写入 hash query（`?kw=&stoneType=&knobStyle=` 等），刷新后可完整还原。
 
@@ -102,7 +102,7 @@ sologsb101-1021/
 │   │   │   ├── stores/           # stoneStore.ts designStore.ts carveStore.ts impressionStore.ts
 │   │   │   ├── components/common/# GradeTag.svelte FilterBar.svelte StatBadge.svelte EmptyPanel.svelte
 │   │   │   ├── hooks/            # useCarveProgress.ts useIdbTable.ts
-│   │   │   ├── utils/            # stone.ts db.ts export.ts
+│   │   │   ├── utils/            # stone.ts db.ts export.ts merge.ts（重复档案合并纯函数）
 │   │   │   └── router/           # index.ts（路由表 + 导航项）
 │   │   ├── routes/               # stones/+page.svelte designs/+page.svelte carve/+page.svelte
 │   │   │                         # impressions/+page.svelte catalog/+page.svelte NotFound.svelte
@@ -130,6 +130,7 @@ sologsb101-1021/
 - **IndexedDB（Dexie，数据库名 `gbsealcarve`）**：5 张业务表 `stones` / `designs` / `carves` / `impressions` / `catalogs`，由 `src/lib/utils/db.ts` 统一定义 schema、版本号与升级迁移；`initDatabase()` 首次打开时自动播种**三层互相引用**的演示数据（Stone → Design → Carve / Impression，另有 Stone → Catalog，固定 id 如 `stone_01`、`design_0101`、`carve_010101`），播种幂等，保证每个页面打开都有内容。
 - **localStorage**：仅存元数据 —— `gbsealcarve:db-version`（本地结构版本）、`gbsealcarve:last-backup-at`（最近导出时间）、`gbsealcarve:ui-prefs`（当前印石 / 印稿）。
 - **备份**：`/catalog` 页可导出 JSON（5 张表全量数据 + 结构版本号），导入时校验 `app` 字段与各集合数组完整性，覆盖导入前二次确认；另有印谱清单 TXT 与钤印台账 CSV。
+- **重复档案合并**：多人各自导入旧备份后，同一方印石 / 同一方印稿可能各存两条。`/catalog` 页「合并重复档案」先预览待并组，再在**单个 Dexie 事务**内按规则合并——印石名、石种、尺寸都相同的算一方；同一方石头上印文与朱白文都相同的算一稿；字段取最近改动（`updatedAt`）的那份；两边的工序、钤印全部迁到保留的印稿（工序重新连号）；印谱中指向同一印稿的多余条目并掉并全谱重新编号。任一步骤失败事务整体回滚，不会留下半份结果。纯函数规则在 `src/lib/utils/merge.ts`，事务封装在 `db.ts` 的 `mergeDuplicates()`。
 - **隐私与无状态**：数据不上传任何服务器，容器不挂载命名卷；清理浏览器站点数据或更换浏览器会丢失档案，请定期导出备份。
 
 ---
@@ -137,6 +138,7 @@ sologsb101-1021/
 ## 八、开发提示
 
 - 类型检查与构建：`cd frontend && npm run build`（含 `svelte-check`，必须零错误）。
+- 重复档案合并的纯函数与事务回滚可用 `npm run verify:merge` 验证（esbuild 临时打包 + `fake-indexeddb` 内存库，不依赖浏览器）。
 - 端口一致性：开发服务器（`vite.config.ts`）、预览服务、compose 的 `FRONTEND_PORT` 默认值均为 `22821`。
 - 路由为 hash 模式：`http://localhost:22821/#/stones` 可直接访问；导航到 `/stones` 这类路径式地址时，`index.html` 的内联脚本会自动重写为 hash 形式，随后由 nginx 的 `try_files $uri $uri/ /index.html` 兜底。
 - 若部署在中文路径下，`docker-compose.yml` 顶层的 `name: gbsealcarve` 可保证项目名不为空，`docker compose config --quiet` 不会报错。
